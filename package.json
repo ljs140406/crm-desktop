@@ -1,0 +1,93 @@
+{
+  "name": "crm-desktop",
+  "version": "1.0.0",
+  "description": "客户跟进管理系统 - 桌面版",
+  "main": "main.js",
+  "author": "CRM",
+  "license": "MIT",
+  "scripts": {
+    "start": "node sync-app.js && electron .",
+    "sync": "node sync-app.js",
+    "dist": "node sync-app.js && electron-builder --win",
+    "dist:portable": "node sync-app.js && electron-builder --win --target portable",
+    "release": "node sync-app.js && electron-builder --win --publish=always"
+  },
+  "build": {
+    "appId": "com.crm.desktop",
+    "productName": "客户跟进管理系统",
+    "copyright": "Copyright © 2026",
+    "artifactName": "CRM-Desktop-${version}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "sync-app.js",
+      "app/**/*",
+      "package.json",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/debug/**/*",
+      "node_modules/ms/**/*",
+      "node_modules/sax/**/*",
+      "node_modules/fs-extra/**/*",
+      "node_modules/graceful-fs/**/*",
+      "node_modules/jsonfile/**/*",
+      "node_modules/universalify/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.escaperegexp/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/tiny-typed-emitter/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "客户跟进管理系统",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "CRM-Desktop-${version}-Portable.${ext}"
+    },
+    "fileAssociations": [
+      {
+        "ext": "crmbak",
+        "name": "CRM 备份文件",
+        "description": "客户跟进管理系统数据备份",
+        "role": "Editor",
+        "icon": "assets/icon.ico"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ljs140406",
+        "repo": "crm-desktop"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
