@@ -1,6 +1,6 @@
 {
   "name": "crm-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "客户跟进管理系统 - 桌面版",
   "main": "main.js",
   "author": "CRM",
