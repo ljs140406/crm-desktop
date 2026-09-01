@@ -1,0 +1,103 @@
+/* =============================================================
+   桌面端增强样式（仅 Electron 桌面版加载，不改动源单文件版）
+   说明：源应用已内建 @media (min-width:1024px) 的宽屏布局
+   （常驻侧边栏 / 隐藏底部导航 / 双列看板 / 四列统计卡），
+   本文件只补充「桌面使用习惯」层面的细节打磨，不覆盖原有布局。
+   ============================================================= */
+
+/* 1) 桌面风格滚动条，替代移动端默认的细窄样式 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(79, 70, 229, .25);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(79, 70, 229, .45);
+    background-clip: content-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 2) 桌面端允许选中文本（源版为防手机误触禁用了选择）
+      注意：刻意不开启 .customer-table，以免影响表头列宽拖拽 */
+.plan-cell,
+.followup-item,
+.history-card,
+.todo-item,
+.stat-card,
+.modal-body,
+.sync-panel-log,
+.history-list,
+.followup-timeline {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+}
+
+/* 3) 输入框保持可选、光标为文本型（源版对部分元素做了移动端限制） */
+input, textarea, select {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    cursor: text;
+}
+
+/* 4) 可点击元素显示手型光标，明确「能点」 */
+.nav-item,
+.bottom-nav-item,
+.settings-card,
+.filter-chip,
+.icon-btn,
+.modal-close,
+.stat-card.clickable,
+.customer-row,
+.key-customer-item,
+.followup-item,
+.history-card,
+.todo-item,
+.kf-trigger {
+    cursor: pointer;
+}
+
+/* 5) 桌面端 Nav 悬浮反馈（源版只有 :active，鼠标用户缺少悬停提示） */
+@media (hover: hover) and (pointer: fine) {
+    .nav-item:hover,
+    .bottom-nav-item:hover {
+        background-color: rgba(79, 70, 229, .06);
+    }
+    .settings-card:hover {
+        box-shadow: 0 4px 12px rgba(17, 24, 39, .10);
+    }
+    .icon-btn:hover {
+        background-color: rgba(79, 70, 229, .08);
+    }
+}
+
+/* 6) 键盘可访问性：Tab 聚焦时有清晰轮廓 */
+button:focus-visible,
+.nav-item:focus-visible,
+.settings-card:focus-visible,
+.customer-row:focus-visible,
+[onclick]:focus-visible {
+    outline: 2px solid rgba(79, 70, 229, .55);
+    outline-offset: 2px;
+}
+
+/* 7) 宽屏下略微加宽侧边栏与内容区，避免大屏两侧留白过多 */
+@media (min-width: 1024px) {
+    :root { --sidebar-w: 250px; }
+    .page { max-width: 1600px; }
+}
+
+/* 8) 宽屏表格：字号与行距更适合鼠标阅读 */
+@media (min-width: 1024px) {
+    .customer-table { font-size: 13.5px; }
+    .customer-table th,
+    .customer-table td { padding: 10px 12px; }
+}
+
+/* 9) 禁止拖拽图片/链接引发的误操作 */
+img, a { -webkit-user-drag: none; }
+
+/* 10) 去掉移动端点击高亮（鼠标场景不需要） */
+* { -webkit-tap-highlight-color: transparent !important; }
