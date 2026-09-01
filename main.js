@@ -29,6 +29,8 @@ const UPDATE_PROVIDER = 'github';
 
 // 是否已配置真正的更新服务器（app-update.yml 的 owner/repo 仍是占位符 YOUR_ 时视作未配置）
 let updateConfigured = false;
+// 标记是否为用户手动触发的“检查更新”（手动检查才弹反馈，启动时的静默检查不弹）
+let manualCheck = false;
 
 // 桌面版为表单类应用，无需 GPU 加速；禁用可避免部分环境（无显卡/远程桌面/虚拟机）
 // 下 GPU 进程启动失败导致白屏或崩溃的问题。
@@ -214,9 +216,28 @@ function setupAutoUpdater() {
     autoUpdater.on('error', (e) => {
         // 静默失败，不打扰用户（多为未配置更新服务器 / 网络问题）
         console.error('[desktop] autoUpdater error:', e && e.message);
+        // 仅当用户手动点击“检查更新”时才把错误反馈出来，避免启动静默检查弹窗打扰
+        if (manualCheck && mainWindow) {
+            dialog.showErrorBox('检查更新失败',
+                (e && e.message) ? `无法连接更新服务器：\n${e.message}` : '无法连接更新服务器，请检查网络后重试。');
+        }
+        manualCheck = false;
     });
 
-    autoUpdater.checkForUpdates().catch(() => {});
+    // 已是最新版本：默认 electron-updater 对此静默不响应，这里补上明确反馈
+    autoUpdater.on('update-not-available', (info) => {
+        if (!manualCheck || !mainWindow) { manualCheck = false; return; } // 启动静默检查不弹窗
+        manualCheck = false;
+        const v = (info && info.version) ? `v${info.version}` : `v${app.getVersion()}`;
+        dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: '已是最新版本',
+            message: `当前已是最新版本（${v}），无需更新。`,
+            buttons: ['确定'],
+        });
+    });
+
+    autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
 }
 
 function createWindow() {
@@ -377,7 +398,8 @@ function buildMenu() {
                             return;
                         }
                         if (autoUpdater) {
-                            autoUpdater.checkForUpdates().catch(() => {});
+                            manualCheck = true;
+                            autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
                         } else {
                             dialog.showErrorBox('更新不可用', '未配置自动更新服务（electron-updater 未安装）。');
                         }
