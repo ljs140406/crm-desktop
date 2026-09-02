@@ -1,6 +1,6 @@
 {
   "name": "crm-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "客户跟进管理系统 - 桌面版",
   "main": "main.js",
   "author": "CRM",
@@ -21,6 +21,7 @@
       "main.js",
       "sync-app.js",
       "app/**/*",
+      "assets/**/*",
       "package.json",
       "node_modules/electron-updater/**/*",
       "node_modules/builder-util-runtime/**/*",
