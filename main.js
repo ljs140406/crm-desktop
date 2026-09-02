@@ -9,7 +9,7 @@
  *       加载失败/白屏；2) app:// 作为 secure+standard 源，localStorage 与
  *       跨域 fetch（GitHub Gist）行为更可靠。
  */
-const { app, BrowserWindow, Menu, shell, dialog, session, protocol } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog, session, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -29,12 +29,17 @@ const UPDATE_PROVIDER = 'github';
 
 // 是否已配置真正的更新服务器（app-update.yml 的 owner/repo 仍是占位符 YOUR_ 时视作未配置）
 let updateConfigured = false;
-// 标记是否为用户手动触发的“检查更新”（手动检查才弹反馈，启动时的静默检查不弹）
-let manualCheck = false;
+// 自动更新是否已完成初始化（setupAutoUpdater 只应执行一次，避免重复监听）
+let updaterInitialized = false;
+// 手动检查入口（初始化后由菜单/托盘调用，带「已是最新」弹窗与失败提示）
+let manualCheckFn = null;
 
-// 桌面版为表单类应用，无需 GPU 加速；禁用可避免部分环境（无显卡/远程桌面/虚拟机）
-// 下 GPU 进程启动失败导致白屏或崩溃的问题。
-app.disableHardwareAcceleration();
+// 桌面版默认启用 GPU 加速（卡片阴影/渐变/过渡动画在 GPU 合成下滚动更顺滑）。
+// 仅当设置环境变量 CRM_DISABLE_GPU=1 时（如远程桌面 / 虚拟机下 GPU 进程异常）
+// 才回退到软件渲染，规避白屏或崩溃。该开关必须在 app ready 前判断。
+if (process.env.CRM_DISABLE_GPU === '1') {
+    app.disableHardwareAcceleration();
+}
 
 const APP_NAME = '客户跟进管理系统';
 
@@ -59,6 +64,8 @@ if (!gotTheLock) {
 }
 
 let mainWindow = null;
+let tray = null;          // 系统托盘实例
+let isQuiting = false;    // 真正退出标志；为 false 时点 X 仅隐藏到托盘
 
 /**
  * 自定义协议处理器：把 app://app/<path> 映射到本地 app/ 目录下的文件。
@@ -178,6 +185,8 @@ function isUpdateConfigured() {
 
 function setupAutoUpdater() {
     if (!autoUpdater) return;
+    if (updaterInitialized) return;          // 仅初始化一次，防止重复监听
+    updaterInitialized = true;
     updateConfigured = isUpdateConfigured();
     if (!updateConfigured) {
         // 未配置真实更新源（仍是占位符）：静默跳过，不在启动时发无效请求
@@ -189,8 +198,12 @@ function setupAutoUpdater() {
     // 不在这里 setFeedURL：electron-updater 会自动读取打包进 asar 的 app-update.yml
     // （由 package.json 的 build.publish 生成，当前为 GitHub Releases）。
 
+    // 是否为「用户手动检查」：手动检查才弹「已是最新 / 失败」提示，避免开机静默检查蹦窗
+    let manualCheck = false;
+
     autoUpdater.on('update-available', (info) => {
-        if (mainWindow) {
+        // 手动检查时不弹「正在下载」（update-downloaded 会再提示，避免冗余）
+        if (!manualCheck && mainWindow) {
             dialog.showMessageBox(mainWindow, {
                 type: 'info',
                 title: '发现新版本',
@@ -198,6 +211,19 @@ function setupAutoUpdater() {
                 buttons: ['确定'],
             });
         }
+    });
+    autoUpdater.on('update-not-available', (info) => {
+        // 已是最新版本：仅手动检查时才提示（修复「点检查更新毫无反应」）
+        if (manualCheck && mainWindow) {
+            const v = (info && info.version) || app.getVersion();
+            dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: '已是最新版本',
+                message: `当前已是最新版本 v${v}。`,
+                buttons: ['确定'],
+            });
+        }
+        manualCheck = false;
     });
     autoUpdater.on('update-downloaded', (info) => {
         if (!mainWindow) return;
@@ -214,30 +240,25 @@ function setupAutoUpdater() {
         });
     });
     autoUpdater.on('error', (e) => {
-        // 静默失败，不打扰用户（多为未配置更新服务器 / 网络问题）
-        console.error('[desktop] autoUpdater error:', e && e.message);
-        // 仅当用户手动点击“检查更新”时才把错误反馈出来，避免启动静默检查弹窗打扰
         if (manualCheck && mainWindow) {
-            dialog.showErrorBox('检查更新失败',
-                (e && e.message) ? `无法连接更新服务器：\n${e.message}` : '无法连接更新服务器，请检查网络后重试。');
+            // 手动检查失败：明确告知用户（而非静默）
+            dialog.showErrorBox('检查更新失败', `更新检查出错：\n${(e && e.message) || e}`);
+        } else {
+            // 静默失败，不打扰用户（多为未配置更新服务器 / 网络问题）
+            console.error('[desktop] autoUpdater error:', e && e.message);
         }
         manualCheck = false;
     });
 
-    // 已是最新版本：默认 electron-updater 对此静默不响应，这里补上明确反馈
-    autoUpdater.on('update-not-available', (info) => {
-        if (!manualCheck || !mainWindow) { manualCheck = false; return; } // 启动静默检查不弹窗
-        manualCheck = false;
-        const v = (info && info.version) ? `v${info.version}` : `v${app.getVersion()}`;
-        dialog.showMessageBox(mainWindow, {
-            type: 'info',
-            title: '已是最新版本',
-            message: `当前已是最新版本（${v}），无需更新。`,
-            buttons: ['确定'],
-        });
-    });
+    // 暴露手动检查入口：菜单「检查更新」/托盘菜单调用
+    manualCheckFn = () => {
+        manualCheck = true;
+        autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
+        // 兜底复位（若相关事件始终未触发，10s 后复位，避免影响后续静默检查）
+        setTimeout(() => { manualCheck = false; }, 10000);
+    };
 
-    autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
+    autoUpdater.checkForUpdates().catch(() => {});
 }
 
 function createWindow() {
@@ -274,6 +295,16 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         mainWindow.maximize();   // 直接最大化，确保进入宽屏布局
         mainWindow.show();
+        // 首屏显示后再检查更新，避免与首屏渲染抢网络/主线程资源
+        setTimeout(setupAutoUpdater, 1500);
+    });
+
+    // 点 X / 触发关闭：未真正退出时改为隐藏到托盘，而非销毁窗口
+    mainWindow.on('close', (e) => {
+        if (!isQuiting) {
+            e.preventDefault();
+            mainWindow.hide();
+        }
     });
 
     mainWindow.on('closed', () => {
@@ -387,29 +418,88 @@ function buildMenu() {
             submenu: [
                 {
                     label: '检查更新',
-                    click: () => {
-                        if (!updateConfigured) {
-                            dialog.showMessageBox(mainWindow, {
-                                type: 'info',
-                                title: '尚未配置更新',
-                                message: '自动更新尚未配置。\n请在 package.json 的 build.publish 填写 GitHub 的 owner / repo，并设置 GH_TOKEN 后重新发布安装包。',
-                                buttons: ['确定'],
-                            });
-                            return;
-                        }
-                        if (autoUpdater) {
-                            manualCheck = true;
-                            autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
-                        } else {
-                            dialog.showErrorBox('更新不可用', '未配置自动更新服务（electron-updater 未安装）。');
-                        }
-                    },
+                    click: () => manualCheckUpdate(),
                 },
                 { label: '关于', click: showAbout },
             ],
         },
     ];
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ---------- 托盘（最小化到托盘）与窗口显隐 ----------
+/** 显示并聚焦主窗口；若窗口已被销毁则重建 */
+function showMainWindow() {
+    if (!mainWindow) {
+        createWindow();
+        return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+}
+
+/** 真正退出：置标志后退出，使 close 事件不再被拦截 */
+function quitApp() {
+    isQuiting = true;
+    app.quit();
+}
+
+/** 手动检查更新（菜单「帮助 → 检查更新」与托盘菜单共用，避免重复逻辑） */
+function manualCheckUpdate() {
+    if (!isUpdateConfigured()) {
+        dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: '尚未配置更新',
+            message: '自动更新尚未配置。\n请在 package.json 的 build.publish 填写 GitHub 的 owner / repo，并设置 GH_TOKEN 后重新发布安装包。',
+            buttons: ['确定'],
+        });
+        return;
+    }
+    if (!autoUpdater) {
+        dialog.showErrorBox('更新不可用', '未配置自动更新服务（electron-updater 未安装）。');
+        return;
+    }
+    // 若首屏 1.5s 内用户就点了检查（更新器尚未初始化），先初始化（带守卫，不会重复监听）
+    if (!updaterInitialized) setupAutoUpdater();
+    if (manualCheckFn) manualCheckFn();
+    else autoUpdater.checkForUpdates().catch(() => {});
+}
+
+/** 创建系统托盘：图标复用 assets/icon.ico；左键单击切换显隐，右键菜单含退出 */
+function createTray() {
+    try {
+        const iconPath = path.join(__dirname, 'assets', 'icon.ico');
+        const trayIcon = fs.existsSync(iconPath)
+            ? nativeImage.createFromPath(iconPath)
+            : nativeImage.createEmpty();
+        tray = new Tray(trayIcon);
+        tray.setToolTip(`${APP_NAME} - 已最小化到托盘`);
+
+        const rebuildTrayMenu = () => {
+            const menu = Menu.buildFromTemplate([
+                { label: '显示窗口', click: () => showMainWindow() },
+                {
+                    label: '检查更新',
+                    click: () => manualCheckUpdate(),
+                },
+                { type: 'separator' },
+                { label: '退出', click: () => quitApp() },
+            ]);
+            tray.setContextMenu(menu);
+        };
+        rebuildTrayMenu();
+
+        // 左键单击：可见则隐藏，隐藏则显示（与右键「显示窗口」一致）
+        tray.on('click', () => {
+            if (!mainWindow) return;
+            if (mainWindow.isVisible()) mainWindow.hide();
+            else showMainWindow();
+        });
+    } catch (e) {
+        // 托盘创建失败不应影响主流程（如无桌面环境）
+        console.error('[desktop] 托盘创建失败', e && e.message);
+    }
 }
 
 // ---------- 生命周期 ----------
@@ -432,7 +522,7 @@ app.whenReady().then(() => {
     buildMenu();
     setupDownloads();
     createWindow();
-    setupAutoUpdater();
+    createTray();
 
     // 首次启动若通过命令行 /「打开方式」/双击关联文件传入了备份文件
     const f = (process.argv || []).find((a) => BACKUP_FILE_RE.test(a));
