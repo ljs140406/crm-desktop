@@ -325,8 +325,14 @@ function setupAutoUpdater() {
     let checking = false;   // 是否正在检查中（防重复触发）
 
     autoUpdater.on('update-available', (info) => {
-        // 静默检查时才弹「正在后台下载」；手动检查等下载完再提示，避免冗余
-        if (!manualCheck && mainWindow) {
+        // 转发给渲染进程：页面下载框展示进度（主路径）
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('crm-update:available', info);
+        }
+        // 仅当窗口不可见（最小化到托盘）且为静默检查时，用原生对话框兜底提示，
+        // 避免「下载框 + 原生对话框」重复；窗口可见时统一用页面下载框。
+        const visible = !!(mainWindow && mainWindow.isVisible && mainWindow.isVisible());
+        if (!manualCheck && !visible && mainWindow) {
             dialog.showMessageBox(mainWindow, {
                 type: 'info',
                 title: '发现新版本',
@@ -335,7 +341,17 @@ function setupAutoUpdater() {
             });
         }
     });
+    autoUpdater.on('download-progress', (p) => {
+        // 实时转发下载进度给渲染进程，驱动下载框进度条（percent/transferred/total）
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('crm-update:progress', p);
+        }
+    });
     autoUpdater.on('update-not-available', (info) => {
+        // 转发给渲染进程（页面 onNotAvailable 为 no-op，避免与下方原生对话框重复）
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('crm-update:not-available', info);
+        }
         // 已是最新版本：仅手动检查时才提示（修复「点检查更新毫无反应」）
         if (manualCheck && mainWindow) {
             const v = (info && info.version) || app.getVersion();
@@ -350,31 +366,36 @@ function setupAutoUpdater() {
         checking = false;
     });
     autoUpdater.on('update-downloaded', (info) => {
-        if (!mainWindow) return;
-        dialog.showMessageBox(mainWindow, {
-            type: 'info',
-            title: '更新就绪',
-            message: `新版本 v${info.version || '?'} 已下载完成。`,
-            detail: '重启应用即可完成更新。',
-            buttons: ['现在重启', '稍后'],
-            defaultId: 0,
-            cancelId: 1,
-        }).then(({ response }) => {
-            if (response === 0) {
-                // 关键修复：点击「现在重启」前必须把 isQuiting 置为 true。
-                // 否则主窗口的 close 处理器（最小化到托盘逻辑）会因 isQuiting===false
-                // 而 e.preventDefault() 取消 app.quit()，导致主进程无法退出、
-                // 已 detach 的 NSIS 安装包（--updated 模式在等旧进程退出）一直挂起，
-                // 表现为「点了重启却不进行安装」。置 true 后 close 不再拦截，
-                // 应用正常退出，安装包接管并完成更新。
-                isQuiting = true;
-                autoUpdater.quitAndInstall();
-            }
-        });
+        // 转发给渲染进程：下载框切换为「立即重启安装」状态（主路径）
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('crm-update:downloaded', info);
+        }
+        // 仅当窗口不可见（最小化到托盘）时用原生对话框兜底，否则与页面下载框重复弹窗
+        const visible = !!(mainWindow && mainWindow.isVisible && mainWindow.isVisible());
+        if (mainWindow && !visible) {
+            dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: '更新就绪',
+                message: `新版本 v${info.version || '?'} 已下载完成。`,
+                detail: '重启应用即可完成更新。',
+                buttons: ['现在重启', '稍后'],
+                defaultId: 0,
+                cancelId: 1,
+            }).then(({ response }) => {
+                if (response === 0) {
+                    isQuiting = true;
+                    autoUpdater.quitAndInstall();
+                }
+            });
+        }
         manualCheck = false;
         checking = false;
     });
     autoUpdater.on('error', (e) => {
+        // 转发给渲染进程（页面 onError 会用 toast 提示）
+        if (mainWindow && mainWindow.webContents) {
+            mainWindow.webContents.send('crm-update:error', (e && e.message) || String(e));
+        }
         // 手动检查失败：一定弹窗告知（不再被短超时静默吞掉）
         if (manualCheck && mainWindow) {
             dialog.showErrorBox('检查更新失败', `更新检查出错：\n${(e && e.message) || e}`);
@@ -403,6 +424,28 @@ function setupAutoUpdater() {
 
     autoUpdater.checkForUpdates().catch(() => {});
 }
+
+// ---------- 渲染进程驱动的更新通道（页面「检查更新」按钮 / 下载框）----------
+// 复用菜单逻辑 manualCheckUpdate：自动判断更新源是否配置、初始化更新器、弹出「已是最新/失败」提示。
+// 页面 electronAPI.updater.check() 调用本 handler；electronAPI.updater.install() 触发重启安装。
+ipcMain.handle('crm-update:check', async () => {
+    try {
+        manualCheckUpdate();
+    } catch (e) {
+        console.error('[desktop] crm-update:check 失败', e && e.message);
+    }
+    return true;
+});
+ipcMain.handle('crm-update:install', async () => {
+    try {
+        // 与菜单「现在重启」一致：置 true 后再 quitAndInstall，避免被托盘最小化逻辑拦截退出
+        isQuiting = true;
+        autoUpdater.quitAndInstall();
+    } catch (e) {
+        console.error('[desktop] crm-update:install 失败', e && e.message);
+    }
+    return true;
+});
 
 function createWindow() {
     mainWindow = new BrowserWindow({
