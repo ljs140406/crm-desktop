@@ -1,6 +1,6 @@
 {
   "name": "crm-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "客户跟进管理系统 - 桌面版",
   "main": "main.js",
   "author": "CRM",
@@ -79,9 +79,8 @@
     ],
     "publish": [
       {
-        "provider": "github",
-        "owner": "ljs140406",
-        "repo": "crm-desktop"
+        "provider": "generic",
+        "url": "https://gitee.com/lij140406/crm-desktop/releases/download/latest"
       }
     ]
   },
