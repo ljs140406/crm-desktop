@@ -35,4 +35,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
         /** 写入加密项；返回是否成功（false 表示系统安全存储不可用，调用方应回落本地存储） */
         set: (key, value) => ipcRenderer.sendSync('crm-secret:set', key, value),
     },
+
+    // ---------- 自动更新：主进程转发进度/状态到渲染进程，渲染进程用下载框展示 ----------
+    // 通道约定（main→renderer）：
+    //   crm-update:available    payload: info（含 version）
+    //   crm-update:progress     payload: {percent, transferred, total}
+    //   crm-update:downloaded   payload: info（含 version）
+    //   crm-update:not-available payload: info|undefined
+    //   crm-update:error        payload: msg(string)
+    updater: {
+        /** 手动触发一次检查（菜单/页面按钮调用） */
+        check: () => ipcRenderer.invoke('crm-update:check'),
+        /** 下载完成后触发安装（立即重启） */
+        install: () => ipcRenderer.invoke('crm-update:install'),
+        onAvailable: (cb) => ipcRenderer.on('crm-update:available', (_e, info) => cb && cb(info)),
+        onProgress: (cb) => ipcRenderer.on('crm-update:progress', (_e, p) => cb && cb(p)),
+        onDownloaded: (cb) => ipcRenderer.on('crm-update:downloaded', (_e, info) => cb && cb(info)),
+        onNotAvailable: (cb) => ipcRenderer.on('crm-update:not-available', () => cb && cb()),
+        onError: (cb) => ipcRenderer.on('crm-update:error', (_e, msg) => cb && cb(msg)),
+    },
 });
