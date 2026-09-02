@@ -1,6 +1,6 @@
 {
   "name": "crm-desktop",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "客户跟进管理系统 - 桌面版",
   "main": "main.js",
   "author": "CRM",
@@ -19,6 +19,7 @@
     "artifactName": "CRM-Desktop-${version}-${arch}.${ext}",
     "files": [
       "main.js",
+      "preload.js",
       "sync-app.js",
       "app/**/*",
       "assets/**/*",
