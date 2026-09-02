@@ -360,7 +360,16 @@ function setupAutoUpdater() {
             defaultId: 0,
             cancelId: 1,
         }).then(({ response }) => {
-            if (response === 0) autoUpdater.quitAndInstall();
+            if (response === 0) {
+                // 关键修复：点击「现在重启」前必须把 isQuiting 置为 true。
+                // 否则主窗口的 close 处理器（最小化到托盘逻辑）会因 isQuiting===false
+                // 而 e.preventDefault() 取消 app.quit()，导致主进程无法退出、
+                // 已 detach 的 NSIS 安装包（--updated 模式在等旧进程退出）一直挂起，
+                // 表现为「点了重启却不进行安装」。置 true 后 close 不再拦截，
+                // 应用正常退出，安装包接管并完成更新。
+                isQuiting = true;
+                autoUpdater.quitAndInstall();
+            }
         });
         manualCheck = false;
         checking = false;
