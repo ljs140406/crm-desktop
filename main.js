@@ -466,13 +466,19 @@ function manualCheckUpdate() {
     else autoUpdater.checkForUpdates().catch(() => {});
 }
 
-/** 创建系统托盘：图标复用 assets/icon.ico；左键单击切换显隐，右键菜单含退出 */
+/** 创建系统托盘：图标复用 assets/icon.ico（缺失则回退 icon.png），左键单击切换显隐，右键菜单含退出 */
 function createTray() {
     try {
-        const iconPath = path.join(__dirname, 'assets', 'icon.ico');
-        const trayIcon = fs.existsSync(iconPath)
-            ? nativeImage.createFromPath(iconPath)
-            : nativeImage.createEmpty();
+        const icoPath = path.join(__dirname, 'assets', 'icon.ico');
+        const pngPath = path.join(__dirname, 'assets', 'icon.png');
+        let trayIcon = nativeImage.createFromPath(icoPath);
+        // 打包若漏了 assets 或 ico 加载失败，回退到 icon.png
+        if (trayIcon.isEmpty() && fs.existsSync(pngPath)) {
+            trayIcon = nativeImage.createFromPath(pngPath);
+        }
+        if (trayIcon.isEmpty()) {
+            console.warn('[desktop] 托盘图标 assets/icon.ico/png 加载失败，托盘可能显示空白');
+        }
         tray = new Tray(trayIcon);
         tray.setToolTip(`${APP_NAME} - 已最小化到托盘`);
 
