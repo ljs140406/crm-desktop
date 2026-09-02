@@ -9,9 +9,127 @@
  *       加载失败/白屏；2) app:// 作为 secure+standard 源，localStorage 与
  *       跨域 fetch（GitHub Gist）行为更可靠。
  */
-const { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog, session, protocol } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog, session, protocol, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// ---------- 原生存储：数据落 userData/crm-store.json，替代 localStorage ----------
+// 目的：1) 突破 localStorage 约 5MB 的配额与「可被系统清理」的风险；
+//       2) 数据以文件形式存在，便于备份/迁移。
+const STORE_PATH = path.join(app.getPath('userData'), 'crm-store.json');
+
+/** 注册原生存储 IPC（同步调用：页面启动必须同步拿到数据，异步会读到空） */
+function setupStorageIPC() {
+    ipcMain.on('crm-storage:load', (event) => {
+        try {
+            event.returnValue = fs.existsSync(STORE_PATH)
+                ? fs.readFileSync(STORE_PATH, 'utf-8')
+                : '';
+        } catch (e) {
+            console.error('[desktop] 读取原生存储失败', e && e.message);
+            event.returnValue = '';
+        }
+    });
+
+    // 原子写入：先写临时文件再 rename，避免写到一半崩溃导致数据文件损坏
+    ipcMain.on('crm-storage:save', (event, raw) => {
+        try {
+            const tmp = `${STORE_PATH}.tmp`;
+            fs.writeFileSync(tmp, typeof raw === 'string' ? raw : '', 'utf-8');
+            fs.renameSync(tmp, STORE_PATH);
+            event.returnValue = true;
+        } catch (e) {
+            console.error('[desktop] 写入原生存储失败', e && e.message);
+            event.returnValue = false;
+        }
+    });
+}
+
+// ---------- WebDAV 通道：请求在 main 进程发出，绕开渲染进程 CORS ----------
+// 页面通过 electronAPI.webdav.request 调用；Node 18+ 自带全局 fetch。
+function setupWebdavIPC() {
+    ipcMain.handle('crm-webdav:request', async (_event, opts) => {
+        const method = (opts && opts.method ? String(opts.method) : 'GET').toUpperCase();
+        const url = opts && opts.url ? String(opts.url) : '';
+        if (!url) return { status: 0, data: 'URL 为空', headers: {} };
+        // 安全约束：只允许 http/https，防止利用主进程探测本地文件或内网资源
+        let u;
+        try { u = new URL(url); } catch (e) { return { status: 0, data: 'URL 非法', headers: {} }; }
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+            return { status: 0, data: '不支持的协议：' + u.protocol, headers: {} };
+        }
+        try {
+            const headers = Object.assign({}, opts.headers || {});
+            const hasBody = method !== 'GET' && method !== 'HEAD' && opts.body != null;
+            const res = await fetch(url, {
+                method,
+                headers,
+                body: hasBody ? String(opts.body) : undefined,
+                redirect: 'follow',
+            });
+            let data = '';
+            try { data = await res.text(); } catch (e) { data = ''; }
+            const out = {};
+            try { res.headers.forEach((v, k) => { out[k] = v; }); } catch (e) { /* 忽略 */ }
+            return { status: res.status, data, headers: out };
+        } catch (e) {
+            return { status: 0, data: '请求失败：' + ((e && e.message) || String(e)), headers: {} };
+        }
+    });
+}
+
+// ---------- 系统安全存储：safeStorage 加密，仅当前系统用户可解密 ----------
+// 用于保存 WebDAV 密码/应用密码；不可用时返回 false，页面会回落本地存储。
+const SECRET_PATH = path.join(app.getPath('userData'), 'crm-secrets.json');
+function setupSecretIPC() {
+    let safeStorage = null;
+    try { safeStorage = require('electron').safeStorage; } catch (e) { safeStorage = null; }
+
+    const usable = () => !!(safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable());
+
+    const readAll = () => {
+        try {
+            return fs.existsSync(SECRET_PATH) ? JSON.parse(fs.readFileSync(SECRET_PATH, 'utf-8')) : {};
+        } catch (e) { return {}; }
+    };
+    const writeAll = (obj) => {
+        try {
+            const tmp = `${SECRET_PATH}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(obj), 'utf-8');
+            fs.renameSync(tmp, SECRET_PATH);
+            return true;
+        } catch (e) { return false; }
+    };
+
+    ipcMain.on('crm-secret:get', (event, key) => {
+        try {
+            if (!usable()) { event.returnValue = ''; return; }
+            const all = readAll();
+            const enc = all[String(key)];
+            if (!enc) { event.returnValue = ''; return; }
+            event.returnValue = safeStorage.decryptString(Buffer.from(enc, 'base64'));
+        } catch (e) {
+            console.error('[desktop] 读取安全存储失败', e && e.message);
+            event.returnValue = '';
+        }
+    });
+
+    ipcMain.on('crm-secret:set', (event, key, value) => {
+        try {
+            if (!usable()) { event.returnValue = false; return; }
+            const all = readAll();
+            if (value == null || value === '') {
+                delete all[String(key)];
+            } else {
+                all[String(key)] = safeStorage.encryptString(String(value)).toString('base64');
+            }
+            event.returnValue = writeAll(all);
+        } catch (e) {
+            console.error('[desktop] 写入安全存储失败', e && e.message);
+            event.returnValue = false;
+        }
+    });
+}
 
 // 自动更新（electron-updater）。未安装依赖时降级为不可用，不影响主流程。
 let autoUpdater = null;
@@ -278,6 +396,7 @@ function createWindow() {
             contextIsolation: true,
             webSecurity: true,
             spellcheck: false,
+            preload: path.join(__dirname, 'preload.js'),   // 受控桥：原生存储 / 后续同步能力
         },
     });
 
@@ -525,6 +644,9 @@ app.whenReady().then(() => {
         app.setAppUserModelId('com.crm.desktop');
     }
     registerAppProtocol();
+    setupStorageIPC();   // 必须在 createWindow 之前注册，否则页面首帧就可能读不到数据
+    setupWebdavIPC();    // WebDAV 同步：主进程代发请求，绕开渲染进程 CORS
+    setupSecretIPC();    // WebDAV 密码：safeStorage 加密存储
     buildMenu();
     setupDownloads();
     createWindow();
