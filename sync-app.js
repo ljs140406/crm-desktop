@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// 源单文件版 HTML（可按需改成你的实际路径）
+// 源单文件版 HTML（唯一源，由用户日常维护）
 const SOURCE = path.resolve('E:/分贝通资料/测试的/crm-app-mobile.html');
 const TARGET_DIR = path.join(__dirname, 'app');
 const TARGET = path.join(TARGET_DIR, 'crm-app.html');
