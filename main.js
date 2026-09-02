@@ -139,11 +139,12 @@ try {
     autoUpdater = null;
 }
 
-// 更新源：采用 GitHub Releases（在 package.json 的 build.publish 配置 owner/repo）。
+// 更新源：采用 Gitee Releases 镜像（国内访问稳定），由 package.json 的 build.publish
+// 配置 generic provider（url 指向 Gitee release 的 latest 标签下载地址）。
 // 构建时 electron-builder 会把 provider 信息写进 app-update.yml 并打进 asar，
 // electron-updater 运行时会自动读取，无需在这里硬编码地址。
-// 若改用自有服务器，把 package.json 的 build.publish 改回 generic 并填 url 即可。
-const UPDATE_PROVIDER = 'github';
+// 若改用 GitHub 或自有服务器，把 build.publish 改回对应 provider 并填 owner/repo 或 url 即可。
+const UPDATE_PROVIDER = 'generic';
 
 // 是否已配置真正的更新服务器（app-update.yml 的 owner/repo 仍是占位符 YOUR_ 时视作未配置）
 let updateConfigured = false;
@@ -291,11 +292,14 @@ function isUpdateConfigured() {
         const p = path.join(process.resourcesPath, 'app-update.yml');
         if (!fs.existsSync(p)) return false;
         const txt = fs.readFileSync(p, 'utf-8');
+        // 1) GitHub provider：检查 owner/repo
         const owner = (txt.match(/^owner:\s*(.+)$/m) || [])[1];
         const repo = (txt.match(/^repo:\s*(.+)$/m) || [])[1];
-        if (!owner || !repo) return false;
-        if (/YOUR_/i.test(owner) || /YOUR_/i.test(repo)) return false;
-        return true;
+        if (owner && repo && !/YOUR_/i.test(owner) && !/YOUR_/i.test(repo)) return true;
+        // 2) generic provider（如 Gitee 镜像）：检查 url 是否为有效 http(s) 地址
+        const url = (txt.match(/^url:\s*(.+)$/m) || [])[1];
+        if (url && !/YOUR_/i.test(url) && /^https?:\/\//i.test(url.trim())) return true;
+        return false;
     } catch (e) {
         return false;
     }
@@ -318,9 +322,10 @@ function setupAutoUpdater() {
 
     // 是否为「用户手动检查」：手动检查才弹「已是最新 / 失败」提示，避免开机静默检查蹦窗
     let manualCheck = false;
+    let checking = false;   // 是否正在检查中（防重复触发）
 
     autoUpdater.on('update-available', (info) => {
-        // 手动检查时不弹「正在下载」（update-downloaded 会再提示，避免冗余）
+        // 静默检查时才弹「正在后台下载」；手动检查等下载完再提示，避免冗余
         if (!manualCheck && mainWindow) {
             dialog.showMessageBox(mainWindow, {
                 type: 'info',
@@ -342,6 +347,7 @@ function setupAutoUpdater() {
             });
         }
         manualCheck = false;
+        checking = false;
     });
     autoUpdater.on('update-downloaded', (info) => {
         if (!mainWindow) return;
@@ -356,24 +362,34 @@ function setupAutoUpdater() {
         }).then(({ response }) => {
             if (response === 0) autoUpdater.quitAndInstall();
         });
+        manualCheck = false;
+        checking = false;
     });
     autoUpdater.on('error', (e) => {
+        // 手动检查失败：一定弹窗告知（不再被短超时静默吞掉）
         if (manualCheck && mainWindow) {
-            // 手动检查失败：明确告知用户（而非静默）
             dialog.showErrorBox('检查更新失败', `更新检查出错：\n${(e && e.message) || e}`);
         } else {
             // 静默失败，不打扰用户（多为未配置更新服务器 / 网络问题）
             console.error('[desktop] autoUpdater error:', e && e.message);
         }
         manualCheck = false;
+        checking = false;
     });
 
     // 暴露手动检查入口：菜单「检查更新」/托盘菜单调用
     manualCheckFn = () => {
+        if (checking) return;            // 正在检查则忽略重复点击
         manualCheck = true;
-        autoUpdater.checkForUpdates().catch(() => { manualCheck = false; });
-        // 兜底复位（若相关事件始终未触发，10s 后复位，避免影响后续静默检查）
-        setTimeout(() => { manualCheck = false; }, 10000);
+        checking = true;
+        // 启动检查；错误交由上面的 error 事件统一弹窗（此处不复位 manualCheck，
+        // 否则网络慢时 10s 内错误事件未到就被置 false → 静默失败、用户"没反应"）
+        autoUpdater.checkForUpdates().catch(() => { /* error 事件会处理 */ });
+        // 安全兜底：120s 仍无结果则静默复位（GitHub 国内超时通常 <60s，error 事件会先到）。
+        // 仅复位标志，不弹窗，避免与后台下载中的「更新就绪」提示冲突。
+        setTimeout(() => {
+            if (checking) { checking = false; manualCheck = false; }
+        }, 120000);
     };
 
     autoUpdater.checkForUpdates().catch(() => {});
