@@ -365,6 +365,9 @@ function setupAutoUpdater() {
         manualCheck = false;
         checking = false;
     });
+    // 安全网：任何更新安装路径（含 quitAndInstall 内部 app.quit）触发前，先把退出标志置真，
+    // 确保主窗口 close 处理器不会 preventDefault 取消退出，避免「点了重启却卡住/不安装」。
+    autoUpdater.on('before-quit-for-update', () => { isQuiting = true; });
     autoUpdater.on('update-downloaded', (info) => {
         // 转发给渲染进程：下载框切换为「立即重启安装」状态（主路径）
         if (mainWindow && mainWindow.webContents) {
@@ -384,7 +387,9 @@ function setupAutoUpdater() {
             }).then(({ response }) => {
                 if (response === 0) {
                     isQuiting = true;
-                    autoUpdater.quitAndInstall();
+                    // 静默更新 + 更新后强制重启应用：避免 oneClick:false 的多用户向导卡在目录页、
+                    // 或装到错误默认目录导致「点了安装但什么都没发生 / 仍是旧版」。
+                    autoUpdater.quitAndInstall(true, true);
                 }
             });
         }
@@ -438,9 +443,10 @@ ipcMain.handle('crm-update:check', async () => {
 });
 ipcMain.handle('crm-update:install', async () => {
     try {
-        // 与菜单「现在重启」一致：置 true 后再 quitAndInstall，避免被托盘最小化逻辑拦截退出
+        // 与菜单「现在重启」一致：置 true 后再 quitAndInstall，避免被托盘最小化逻辑拦截退出。
+        // 传 (true, true) = 静默安装 + 更新后强制重启，规避 oneClick:false 多用户向导卡死。
         isQuiting = true;
-        autoUpdater.quitAndInstall();
+        autoUpdater.quitAndInstall(true, true);
     } catch (e) {
         console.error('[desktop] crm-update:install 失败', e && e.message);
     }
