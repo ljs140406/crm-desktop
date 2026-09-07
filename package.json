@@ -1,6 +1,6 @@
 {
   "name": "crm-desktop",
-  "version": "1.1.18",
+  "version": "1.1.19",
   "description": "客户跟进管理系统 - 桌面版",
   "main": "main.js",
   "author": "CRM",
@@ -52,9 +52,9 @@
       "icon": "assets/icon.ico"
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
       "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
