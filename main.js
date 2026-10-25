@@ -430,6 +430,15 @@ function setupAutoUpdater() {
     autoUpdater.checkForUpdates().catch(() => {});
 }
 
+// ---------- 应用版本（页面「更新日志」标注当前版本）----------
+ipcMain.on('crm-app:version', (event) => {
+    try {
+        event.returnValue = app.getVersion();
+    } catch (e) {
+        event.returnValue = '';
+    }
+});
+
 // ---------- 渲染进程驱动的更新通道（页面「检查更新」按钮 / 下载框）----------
 // 复用菜单逻辑 manualCheckUpdate：自动判断更新源是否配置、初始化更新器、弹出「已是最新/失败」提示。
 // 页面 electronAPI.updater.check() 调用本 handler；electronAPI.updater.install() 触发重启安装。
