@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         set: (key, value) => ipcRenderer.sendSync('crm-secret:set', key, value),
     },
 
+    // ---------- 应用信息 ----------
+    app: {
+        /** 当前应用版本号（package.json version，供「更新日志」标注当前版本） */
+        getVersion: () => ipcRenderer.sendSync('crm-app:version'),
+    },
+
     // ---------- 自动更新：主进程转发进度/状态到渲染进程，渲染进程用下载框展示 ----------
     // 通道约定（main→renderer）：
     //   crm-update:available    payload: info（含 version）
