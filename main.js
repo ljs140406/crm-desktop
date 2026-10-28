@@ -186,6 +186,30 @@ let mainWindow = null;
 let tray = null;          // 系统托盘实例
 let isQuiting = false;    // 真正退出标志；为 false 时点 X 仅隐藏到托盘
 
+// ---------- 更新状态快照（解决「事件早于页面监听 → 永久丢失」） ----------
+// 背景：autoUpdater 在启动时就开始检查/下载，而渲染进程要等 DOMContentLoaded 后才注册
+// IPC 监听；早于那一刻发出的 update-available / update-downloaded 事件会被 Electron 直接丢弃，
+// 页面永远收不到 → 用户既看不到「发现新版本」，也看不到下载进度，更没有「立即重启安装」按钮。
+// 现在主进程把状态显式存下来，页面启动时主动拉取一次（crm-update:state）即可补齐全部错过的事件。
+const updateState = {
+    status: 'idle',        // idle | checking | available | downloading | ready | uptodate | error
+    version: '',           // 新版本号
+    percent: 0,            // 下载进度 0~100
+    transferred: 0,        // 已下载字节
+    total: 0,              // 总字节
+    error: '',             // 错误信息
+    updatedAt: 0           // 最后更新时间戳
+};
+function setUpdateState(patch) {
+    Object.assign(updateState, patch || {});
+    updateState.updatedAt = Date.now();
+    // 状态变化即时推给页面（页面可能刚好已就绪）
+    if (mainWindow && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+        try { mainWindow.webContents.send('crm-update:state', Object.assign({}, updateState)); } catch (e) { /* 忽略 */ }
+    }
+}
+function updateStateSnapshot() { return Object.assign({}, updateState); }
+
 /**
  * 自定义协议处理器：把 app://app/<path> 映射到本地 app/ 目录下的文件。
  *
@@ -325,6 +349,12 @@ function setupAutoUpdater() {
     let checking = false;   // 是否正在检查中（防重复触发）
 
     autoUpdater.on('update-available', (info) => {
+        // 记录状态（供页面启动时补齐错过的事件）
+        setUpdateState({
+            status: 'available',
+            version: (info && info.version) || '',
+            percent: 0, transferred: 0, total: 0, error: ''
+        });
         // 转发给渲染进程：页面下载框展示进度（主路径）
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('crm-update:available', info);
@@ -342,12 +372,20 @@ function setupAutoUpdater() {
         }
     });
     autoUpdater.on('download-progress', (p) => {
+        // 记录状态：页面即使错过进度事件，也能通过 crm-update:state 拿到当前进度
+        setUpdateState({
+            status: 'downloading',
+            percent: (p && typeof p.percent === 'number') ? p.percent : updateState.percent,
+            transferred: (p && p.transferred) || 0,
+            total: (p && p.total) || 0
+        });
         // 实时转发下载进度给渲染进程，驱动下载框进度条（percent/transferred/total）
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('crm-update:progress', p);
         }
     });
     autoUpdater.on('update-not-available', (info) => {
+        setUpdateState({ status: 'uptodate', version: (info && info.version) || app.getVersion(), percent: 0, error: '' });
         // 转发给渲染进程（页面 onNotAvailable 为 no-op，避免与下方原生对话框重复）
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('crm-update:not-available', info);
@@ -369,21 +407,30 @@ function setupAutoUpdater() {
     // 确保主窗口 close 处理器不会 preventDefault 取消退出，避免「点了重启却卡住/不安装」。
     autoUpdater.on('before-quit-for-update', () => { isQuiting = true; });
     autoUpdater.on('update-downloaded', (info) => {
+        // 记录状态（下载完成是**最关键**的状态：页面若错过该事件就永远没有「立即重启安装」入口）
+        setUpdateState({
+            status: 'ready',
+            version: (info && info.version) || '',
+            percent: 100, transferred: updateState.total, total: updateState.total, error: ''
+        });
         // 转发给渲染进程：下载框切换为「立即重启安装」状态（主路径）
         if (mainWindow && mainWindow.webContents) {
             mainWindow.webContents.send('crm-update:downloaded', info);
         }
-        // 仅当窗口不可见（最小化到托盘）时用原生对话框兜底，否则与页面下载框重复弹窗
-        const visible = !!(mainWindow && mainWindow.isVisible && mainWindow.isVisible());
-        if (mainWindow && !visible) {
+        // 原生对话框兜底：**无论窗口是否可见都弹**。
+        // 旧逻辑只在窗口隐藏（最小化到托盘）时弹，窗口可见时完全依赖页面内那个小弹框 →
+        // 用户没注意就永远错过「更新就绪」，而点 × 只是最小化到托盘、autoInstallOnAppQuit 又不触发
+        // → 更新永远装不上（用户实测：已下载 1.1.65 却一直停留在旧版）。
+        if (mainWindow) {
             dialog.showMessageBox(mainWindow, {
                 type: 'info',
                 title: '更新就绪',
                 message: `新版本 v${info.version || '?'} 已下载完成。`,
-                detail: '重启应用即可完成更新。',
+                detail: '点击「现在重启」即可完成更新；点击「稍后」可继续使用旧版，程序会记住已下载状态。',
                 buttons: ['现在重启', '稍后'],
                 defaultId: 0,
                 cancelId: 1,
+                noLink: true,
             }).then(({ response }) => {
                 if (response === 0) {
                     isQuiting = true;
@@ -397,9 +444,11 @@ function setupAutoUpdater() {
         checking = false;
     });
     autoUpdater.on('error', (e) => {
+        const msg = (e && e.message) || String(e);
+        setUpdateState({ status: 'error', error: msg });
         // 转发给渲染进程（页面 onError 会用 toast 提示）
         if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.send('crm-update:error', (e && e.message) || String(e));
+            mainWindow.webContents.send('crm-update:error', msg);
         }
         // 手动检查失败：一定弹窗告知（不再被短超时静默吞掉）
         if (manualCheck && mainWindow) {
@@ -417,6 +466,7 @@ function setupAutoUpdater() {
         if (checking) return;            // 正在检查则忽略重复点击
         manualCheck = true;
         checking = true;
+        setUpdateState({ status: 'checking', error: '' });
         // 启动检查；错误交由上面的 error 事件统一弹窗（此处不复位 manualCheck，
         // 否则网络慢时 10s 内错误事件未到就被置 false → 静默失败、用户"没反应"）
         autoUpdater.checkForUpdates().catch(() => { /* error 事件会处理 */ });
@@ -427,6 +477,8 @@ function setupAutoUpdater() {
         }, 120000);
     };
 
+    // 启动即检查：状态置为 checking，页面启动后可通过 crm-update:state 看到「正在检查」
+    setUpdateState({ status: 'checking', error: '' });
     autoUpdater.checkForUpdates().catch(() => {});
 }
 
@@ -444,11 +496,16 @@ ipcMain.on('crm-app:version', (event) => {
 // 页面 electronAPI.updater.check() 调用本 handler；electronAPI.updater.install() 触发重启安装。
 ipcMain.handle('crm-update:check', async () => {
     try {
+        setUpdateState({ status: 'checking', error: '' });
         manualCheckUpdate();
     } catch (e) {
         console.error('[desktop] crm-update:check 失败', e && e.message);
     }
     return true;
+});
+// 页面启动时主动拉取当前更新状态：补齐「早于页面监听」而被丢弃的事件（发现新版本/下载完成）
+ipcMain.handle('crm-update:state', async () => {
+    return updateStateSnapshot();
 });
 ipcMain.handle('crm-update:install', async () => {
     try {
