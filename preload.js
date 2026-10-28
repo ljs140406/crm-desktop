@@ -54,10 +54,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
         check: () => ipcRenderer.invoke('crm-update:check'),
         /** 下载完成后触发安装（立即重启） */
         install: () => ipcRenderer.invoke('crm-update:install'),
+        /**
+         * 拉取主进程当前的更新状态快照（{status,version,percent,transferred,total,error}）。
+         * 页面启动时调用一次即可补齐「早于页面 IPC 监听而被丢弃」的更新事件
+         * （发现新版本 / 下载进度 / 更新就绪），避免用户完全看不到更新提示。
+         */
+        getState: () => ipcRenderer.invoke('crm-update:state'),
         onAvailable: (cb) => ipcRenderer.on('crm-update:available', (_e, info) => cb && cb(info)),
         onProgress: (cb) => ipcRenderer.on('crm-update:progress', (_e, p) => cb && cb(p)),
         onDownloaded: (cb) => ipcRenderer.on('crm-update:downloaded', (_e, info) => cb && cb(info)),
         onNotAvailable: (cb) => ipcRenderer.on('crm-update:not-available', () => cb && cb()),
         onError: (cb) => ipcRenderer.on('crm-update:error', (_e, msg) => cb && cb(msg)),
+        /** 主进程状态变化推送（状态变更即时广播，页面可实时刷新状态行） */
+        onState: (cb) => ipcRenderer.on('crm-update:state', (_e, st) => cb && cb(st)),
     },
 });
